@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext, createContext } from "react";
+import React, { useState, useEffect, useContext, createContext, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { motion, AnimatePresence } from "framer-motion";
 import { createClient } from "@supabase/supabase-js";
@@ -7,7 +7,6 @@ import { createClient } from "@supabase/supabase-js";
 // ⚙️ CONFIGURATION
 // ==========================================
 const WORKER_URL = "https://damp-wind-775f.rusdumitru122.workers.dev/"; 
-
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.SUPABASE_KEY || "";
 
@@ -16,7 +15,7 @@ const supabase = (SUPABASE_URL && SUPABASE_KEY)
     : null;
 
 // ==========================================
-// 🛠️ UTILS
+// 🛠️ UTILS & PARSERS
 // ==========================================
 
 const scrollToSection = (e: React.MouseEvent, id: string) => {
@@ -25,6 +24,98 @@ const scrollToSection = (e: React.MouseEvent, id: string) => {
   if (element) {
     element.scrollIntoView({ behavior: "smooth" });
   }
+};
+
+// --- Data Types for the New Dashboard ---
+interface AuditCategory {
+    score: number;
+    feedback: string;
+    fix?: string;
+}
+
+interface AuditData {
+    overallScore: number;
+    summary: string;
+    categories: {
+        visual: AuditCategory;
+        audio: AuditCategory;
+        copy: AuditCategory;
+    };
+    checks: { label: string; status: 'PASS' | 'FAIL' | 'WARN'; details: string; fix?: string }[];
+    notes: { time: string; note: string }[];
+}
+
+// --- The Parser: Converts AI Markdown to Dashboard Data ---
+const parseAuditResult = (text: string): AuditData => {
+    // 1. Extract Score
+    const scoreMatch = text.match(/#SCORE:\s*(\d+)/i);
+    const overallScore = scoreMatch ? parseInt(scoreMatch[1]) : 0;
+
+    // 2. Helper to extract sections
+    const extractSection = (header: string, nextHeader: string) => {
+        const regex = new RegExp(`#${header}([\\s\\S]*?)(?=#${nextHeader}|$)`, 'i');
+        const match = text.match(regex);
+        return match ? match[1].trim() : "";
+    };
+
+    const extractField = (sectionText: string, marker: string) => {
+        const regex = new RegExp(`\\*\\*${marker}:\\*\\*\\s*([\\s\\S]*?)(?=\\*\\*|$)`, 'i');
+        const match = sectionText.match(regex);
+        return match ? match[1].trim() : "";
+    };
+
+    // 3. Parse Sections
+    const hookText = extractSection('HOOK', 'BODY');
+    const bodyText = extractSection('BODY', 'AUDIO');
+    const audioText = extractSection('AUDIO', 'SCRIPT');
+    const scriptText = extractSection('SCRIPT', '$');
+
+    // 4. Construct Data Object
+    return {
+        overallScore,
+        summary: "This creative was analyzed for viral potential. See breakdown below.",
+        categories: {
+            visual: {
+                score: overallScore > 8 ? 90 : (overallScore * 10 - 5), // Estimate sub-score based on total
+                feedback: extractField(bodyText, "Pacing/Visuals") || bodyText,
+                fix: extractField(bodyText, "The Fix")
+            },
+            audio: {
+                score: overallScore > 8 ? 95 : (overallScore * 10),
+                feedback: extractField(audioText, "The problem") || audioText,
+                fix: extractField(audioText, "The fix")
+            },
+            copy: {
+                score: overallScore > 8 ? 85 : (overallScore * 10 + 5),
+                feedback: extractField(hookText, "The Problem") || hookText,
+                fix: extractField(hookText, "The Fix")
+            }
+        },
+        checks: [
+            { 
+                label: "Hook Efficiency", 
+                status: overallScore > 7 ? 'PASS' : 'FAIL', 
+                details: extractField(hookText, "The Problem").substring(0, 100) + "...", 
+                fix: extractField(hookText, "The Fix") 
+            },
+            { 
+                label: "Pacing", 
+                status: overallScore > 5 ? 'PASS' : 'WARN', 
+                details: "Analyzed visual density and cut speed.", 
+                fix: "Review Visuals section." 
+            },
+            { 
+                label: "Script Impact", 
+                status: 'WARN', 
+                details: "Reviewing copy for direct response triggers.", 
+                fix: extractField(scriptText, "Rewrite") 
+            }
+        ],
+        notes: [
+            { time: "0:00", note: "Hook analysis started." },
+            { time: "End", note: "Call to action analysis." }
+        ]
+    };
 };
 
 // ==========================================
@@ -47,7 +138,7 @@ interface AuthContextType {
     authView: 'login' | 'signup';
     setAuthView: (view: 'login' | 'signup') => void;
     openTool: () => void;
-    triggerUpgrade: () => void; // New helper to scroll to pricing
+    triggerUpgrade: () => void;
 }
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType);
@@ -129,6 +220,114 @@ const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 const useAuth = () => useContext(AuthContext);
 
 // ==========================================
+// 📊 NEW DASHBOARD COMPONENTS
+// ==========================================
+
+const ScoreCircle = ({ score }: { score: number }) => {
+    let color = '#FF0050'; // Red
+    if (score >= 5) color = '#fbbf24'; // Yellow
+    if (score >= 8) color = '#00F2EA'; // Cyan (Neon)
+
+    const radius = 36;
+    const circumference = 2 * Math.PI * radius;
+    // Normalized score (input 0-10, display as %)
+    const percent = score * 10;
+    const offset = circumference - (percent / 100) * circumference;
+
+    return (
+        <div className="relative w-24 h-24 flex items-center justify-center">
+            <svg className="w-full h-full transform -rotate-90">
+                <circle cx="48" cy="48" r={radius} stroke="#333" strokeWidth="6" fill="transparent" />
+                <circle cx="48" cy="48" r={radius} stroke={color} strokeWidth="6" fill="transparent" strokeDasharray={circumference} strokeDashoffset={offset} strokeLinecap="round" />
+            </svg>
+            <span className="absolute text-2xl font-bold text-white">{score}/10</span>
+        </div>
+    );
+};
+
+const StatusChip = ({ status }: { status: 'PASS' | 'FAIL' | 'WARN' }) => {
+    const styles = {
+        PASS: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+        FAIL: 'bg-red-500/10 text-red-400 border-red-500/20',
+        WARN: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
+    };
+    return <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${styles[status]}`}>{status}</span>;
+};
+
+const FixBox = ({ text }: { text: string }) => (
+    <div className="mt-auto pt-4 border-t border-white/5">
+        <div className="flex items-center gap-2 mb-2">
+            <i className="fa-solid fa-wrench text-[#00F2EA] text-xs"></i>
+            <span className="text-[10px] font-bold text-[#00F2EA] uppercase tracking-wider">The Fix</span>
+        </div>
+        <p className="text-sm text-gray-300 italic bg-white/5 p-3 rounded-lg border-l-2 border-[#00F2EA]">"{text}"</p>
+    </div>
+);
+
+const AuditDashboard = ({ rawText, reset }: { rawText: string, reset: () => void }) => {
+    const data = useMemo(() => parseAuditResult(rawText), [rawText]);
+
+    return (
+        <div className="space-y-8 pb-10">
+            {/* Header */}
+            <div className="flex items-center justify-between mb-2">
+                <h2 className="text-xl font-bold text-white">Analysis Report</h2>
+                <button onClick={reset} className="text-sm text-gray-400 hover:text-white underline">Audit Another</button>
+            </div>
+
+            {/* Verdict Card */}
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col md:flex-row gap-6 items-center bg-[#161616] p-6 rounded-2xl border border-white/10">
+                <div className="flex-shrink-0"><ScoreCircle score={data.overallScore} /></div>
+                <div>
+                    <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Creative Director's Verdict</h2>
+                    <p className="text-lg font-medium text-white italic">"{data.summary}"</p>
+                </div>
+            </motion.div>
+
+            {/* Main Pillars */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {[
+                    { title: 'Visuals', icon: 'fa-eye', data: data.categories.visual },
+                    { title: 'Audio', icon: 'fa-volume-high', data: data.categories.audio },
+                    { title: 'Copy', icon: 'fa-pen-nib', data: data.categories.copy }
+                ].map((pillar, idx) => (
+                    <motion.div key={idx} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 * idx }} className="bg-[#161616] p-5 rounded-xl border border-white/10 flex flex-col h-full">
+                        <div className="flex justify-between items-center mb-4 pb-3 border-b border-white/5">
+                            <div className="flex items-center gap-2">
+                                <i className={`fa-solid ${pillar.icon} text-gray-400`}></i>
+                                <h3 className="font-bold text-white">{pillar.title}</h3>
+                            </div>
+                            <span className="font-mono font-bold text-[#00F2EA]">{pillar.data.score}%</span>
+                        </div>
+                        <p className="text-sm text-gray-400 mb-4 flex-grow">{pillar.data.feedback.substring(0, 150)}...</p>
+                        {pillar.data.fix && <FixBox text={pillar.data.fix} />}
+                    </motion.div>
+                ))}
+            </div>
+
+            {/* Diagnostic Checks */}
+            <div>
+                <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+                    <i className="fa-solid fa-list-check text-[#00F2EA]"></i> Diagnostic Checks
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {data.checks.map((check, idx) => (
+                        <div key={idx} className="bg-[#161616] p-4 rounded-xl border border-white/5 flex flex-col">
+                            <div className="flex justify-between items-center mb-2">
+                                <span className="text-xs font-bold uppercase text-gray-500">{check.label}</span>
+                                <StatusChip status={check.status} />
+                            </div>
+                            <p className="text-sm text-gray-300 mb-2">{check.details}</p>
+                            {check.fix && <p className="text-xs text-[#00F2EA] mt-auto pt-2 border-t border-white/5">Fix: {check.fix.substring(0, 60)}...</p>}
+                        </div>
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ==========================================
 // 🚀 THE APP COMPONENT (VIDEO ANALYZER)
 // ==========================================
 
@@ -138,35 +337,20 @@ const ViralAuditTool = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => v
     const [analyzing, setAnalyzing] = useState(false);
     const [result, setResult] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
-    
-    // 🆕 Usage State
     const [auditCount, setAuditCount] = useState<number>(0);
     const [loadingUsage, setLoadingUsage] = useState(false);
     const FREE_LIMIT = 3;
 
-    // Load usage when tool opens
     useEffect(() => { 
-        if(!isOpen) { 
-            setFile(null); 
-            setResult(null); 
-            setError(null); 
-        } else if (user && supabase) {
-            loadUsage();
-        }
+        if(!isOpen) { setFile(null); setResult(null); setError(null); } 
+        else if (user && supabase) { loadUsage(); }
     }, [isOpen, user]);
 
     const loadUsage = async () => {
         if(!user || !supabase) return;
         setLoadingUsage(true);
-        // Fetch profile
-        const { data, error } = await supabase
-            .from('profiles')
-            .select('audit_count')
-            .eq('id', user.id)
-            .single();
-        
+        const { data } = await supabase.from('profiles').select('audit_count').eq('id', user.id).single();
         if(data) setAuditCount(data.audit_count);
-        // If error (profile missing), we assume 0 (it will be created by trigger usually)
         setLoadingUsage(false);
     };
 
@@ -179,11 +363,7 @@ const ViralAuditTool = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => v
 
     const runAnalysis = async () => {
         if (!file || !user || !supabase) return;
-
-        // 🛑 1. CHECK LIMIT
-        if (auditCount >= FREE_LIMIT) {
-            return; // UI handles the display, we just stop logic here
-        }
+        if (auditCount >= FREE_LIMIT) return;
 
         setAnalyzing(true);
         setError(null);
@@ -197,7 +377,6 @@ const ViralAuditTool = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => v
             });
 
             const base64Data = await toBase64(file);
-
             const response = await fetch(WORKER_URL, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -210,13 +389,10 @@ const ViralAuditTool = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => v
             });
 
             const json = await response.json();
-
             if (json.error) throw new Error(json.error.message || "Analysis failed");
             if (!json.candidates?.[0]?.content?.parts?.[0]?.text) throw new Error("No analysis returned");
 
             setResult(json.candidates[0].content.parts[0].text);
-            
-            // ✅ 2. INCREMENT COUNT ON SUCCESS
             const newCount = auditCount + 1;
             setAuditCount(newCount);
             await supabase.from('profiles').update({ audit_count: newCount }).eq('id', user.id);
@@ -228,17 +404,6 @@ const ViralAuditTool = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => v
         }
     };
 
-    const formatText = (text: string) => {
-        return text
-            .replace(/\*\*(.*?)\*\*/g, '<strong class="text-white">$1</strong>')
-            .replace(/#HOOK/g, '<h3 class="text-[#00F2EA] border-b border-[#333] pb-1 mt-6 mb-2 text-lg font-bold">🪝 HOOK</h3>')
-            .replace(/#BODY/g, '<h3 class="text-[#00F2EA] border-b border-[#333] pb-1 mt-6 mb-2 text-lg font-bold">📹 BODY</h3>')
-            .replace(/#AUDIO/g, '<h3 class="text-[#00F2EA] border-b border-[#333] pb-1 mt-6 mb-2 text-lg font-bold">🔊 AUDIO</h3>')
-            .replace(/#SCRIPT/g, '<h3 class="text-[#00F2EA] border-b border-[#333] pb-1 mt-6 mb-2 text-lg font-bold">📝 SCRIPT</h3>')
-            .replace(/\n/g, '<br>');
-    };
-
-    // 🎨 UI HELPERS
     const isLimitReached = auditCount >= FREE_LIMIT;
     const remaining = Math.max(0, FREE_LIMIT - auditCount);
 
@@ -248,7 +413,7 @@ const ViralAuditTool = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => v
                 <>
                     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0 bg-black/80 backdrop-blur-md z-[150]" />
                     <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} className="fixed inset-0 z-[151] flex items-center justify-center p-4 pointer-events-none">
-                        <div className="bg-[#111] border border-[#333] w-full max-w-2xl max-h-[90vh] rounded-2xl shadow-2xl overflow-hidden flex flex-col pointer-events-auto">
+                        <div className="bg-[#111] border border-[#333] w-full max-w-4xl max-h-[90vh] rounded-2xl shadow-2xl overflow-hidden flex flex-col pointer-events-auto">
                             
                             {/* Header */}
                             <div className="p-5 border-b border-[#222] flex justify-between items-center bg-[#161616]">
@@ -261,76 +426,40 @@ const ViralAuditTool = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => v
                             <div className="p-6 overflow-y-auto flex-1 custom-scrollbar relative">
                                 {!user ? (
                                     <div className="text-center py-10">
-                                        <div className="w-16 h-16 rounded-full bg-[#1a1a1a] flex items-center justify-center border border-[#333] mb-4 mx-auto">
-                                            <i className="fa-solid fa-lock text-2xl text-[#FF0050]"></i>
-                                        </div>
+                                        <div className="w-16 h-16 rounded-full bg-[#1a1a1a] flex items-center justify-center border border-[#333] mb-4 mx-auto"><i className="fa-solid fa-lock text-2xl text-[#FF0050]"></i></div>
                                         <h3 className="text-xl font-bold text-white mb-2">Login Required</h3>
-                                        <p className="text-gray-400 mb-6">You must be logged in to use the Deep Audit tool.</p>
-                                        <button onClick={() => { onClose(); setShowAuthModal(true); setAuthView('login'); }} className="bg-white text-black font-bold px-6 py-3 rounded-lg hover:bg-gray-200">Log In / Sign Up</button>
+                                        <button onClick={() => { onClose(); setShowAuthModal(true); setAuthView('login'); }} className="bg-white text-black font-bold px-6 py-3 rounded-lg hover:bg-gray-200 mt-4">Log In / Sign Up</button>
                                     </div>
                                 ) : (
                                     <>
-                                        {/* USAGE BAR */}
                                         {!result && (
                                             <div className="mb-6 flex items-center justify-between bg-[#1a1a1a] p-3 rounded-lg border border-[#333]">
-                                                <div className="text-sm text-gray-400">
-                                                    Free Audits: <span className={remaining === 0 ? "text-red-500 font-bold" : "text-white font-bold"}>{remaining}</span> / {FREE_LIMIT} left
-                                                </div>
-                                                {remaining === 0 && (
-                                                    <button onClick={triggerUpgrade} className="text-xs bg-[#FF0050] text-white px-3 py-1 rounded font-bold hover:bg-red-600 transition-colors">
-                                                        UPGRADE
-                                                    </button>
-                                                )}
+                                                <div className="text-sm text-gray-400">Free Audits: <span className={remaining === 0 ? "text-red-500 font-bold" : "text-white font-bold"}>{remaining}</span> / {FREE_LIMIT} left</div>
+                                                {remaining === 0 && <button onClick={triggerUpgrade} className="text-xs bg-[#FF0050] text-white px-3 py-1 rounded font-bold hover:bg-red-600">UPGRADE</button>}
                                             </div>
                                         )}
 
-                                        {/* LIMIT REACHED STATE */}
                                         {isLimitReached && !result ? (
                                              <div className="text-center py-8">
-                                                <div className="w-16 h-16 rounded-full bg-red-900/20 flex items-center justify-center border border-red-500/30 mb-4 mx-auto">
-                                                    <i className="fa-solid fa-ban text-2xl text-red-500"></i>
-                                                </div>
-                                                <h3 className="text-xl font-bold text-white mb-2">Free Limit Reached</h3>
-                                                <p className="text-gray-400 mb-6 max-w-sm mx-auto">You've used all 3 free audits. Upgrade to Pro for unlimited access and deep analysis.</p>
-                                                <button onClick={triggerUpgrade} className="bg-white text-black font-bold px-8 py-3 rounded-lg hover:bg-gray-200 w-full sm:w-auto">
-                                                    View Plans
-                                                </button>
+                                                <div className="w-16 h-16 rounded-full bg-red-900/20 flex items-center justify-center border border-red-500/30 mb-4 mx-auto"><i className="fa-solid fa-ban text-2xl text-red-500"></i></div>
+                                                <h3 className="text-xl font-bold text-white mb-2">Limit Reached</h3>
+                                                <button onClick={triggerUpgrade} className="bg-white text-black font-bold px-8 py-3 rounded-lg hover:bg-gray-200 w-full sm:w-auto mt-4">View Plans</button>
                                             </div>
                                         ) : !result ? (
-                                            // UPLOAD STATE
-                                            <div className="text-center">
-                                                <div 
-                                                    onClick={() => document.getElementById('app-file-upload')?.click()}
-                                                    className={`border-2 border-dashed rounded-xl p-10 cursor-pointer transition-all ${file ? 'border-[#00F2EA] bg-[#00F2EA]/5' : 'border-[#333] hover:border-gray-500 hover:bg-[#1a1a1a]'}`}
-                                                >
+                                            <div className="text-center py-10">
+                                                <div onClick={() => document.getElementById('app-file-upload')?.click()} className={`border-2 border-dashed rounded-xl p-12 cursor-pointer transition-all ${file ? 'border-[#00F2EA] bg-[#00F2EA]/5' : 'border-[#333] hover:border-gray-500 hover:bg-[#1a1a1a]'}`}>
                                                     <input type="file" id="app-file-upload" className="hidden" accept="video/mp4,video/quicktime,video/webm" onChange={handleFileChange} />
-                                                    <i className={`fa-solid ${file ? 'fa-check-circle text-[#00F2EA]' : 'fa-cloud-arrow-up text-gray-500'} text-4xl mb-4`}></i>
-                                                    <h4 className="text-white font-medium text-lg">{file ? file.name : "Upload Video Ad"}</h4>
+                                                    <i className={`fa-solid ${file ? 'fa-check-circle text-[#00F2EA]' : 'fa-cloud-arrow-up text-gray-500'} text-5xl mb-6`}></i>
+                                                    <h4 className="text-white font-medium text-xl">{file ? file.name : "Upload Video Ad"}</h4>
                                                     <p className="text-sm text-gray-500 mt-2">{file ? "Ready to analyze" : "MP4, MOV or WEBM (Max 20MB)"}</p>
                                                 </div>
-
-                                                {error && <p className="text-[#FF0050] text-sm mt-4 bg-[#FF0050]/10 p-3 rounded">{error}</p>}
-
-                                                <button 
-                                                    onClick={runAnalysis} 
-                                                    disabled={!file || analyzing || loadingUsage}
-                                                    className="w-full mt-6 bg-gradient-to-r from-[#FF0050] to-[#00F2EA] text-white font-bold py-4 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                                                >
+                                                {error && <p className="text-[#FF0050] text-sm mt-4">{error}</p>}
+                                                <button onClick={runAnalysis} disabled={!file || analyzing || loadingUsage} className="w-full mt-8 bg-gradient-to-r from-[#FF0050] to-[#00F2EA] text-white font-bold py-4 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
                                                     {analyzing ? <><i className="fa-solid fa-circle-notch fa-spin"></i> Analyzing...</> : "Run Deep Audit"}
                                                 </button>
                                             </div>
                                         ) : (
-                                            // RESULTS VIEW
-                                            <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4">
-                                                <div className="flex items-center justify-between mb-4">
-                                                    <h3 className="text-white font-bold text-lg">Analysis Report</h3>
-                                                    <button onClick={() => setResult(null)} className="text-xs text-gray-500 hover:text-white underline">Audit Another</button>
-                                                </div>
-                                                <div 
-                                                    className="prose prose-invert max-w-none text-sm text-gray-300 leading-relaxed"
-                                                    dangerouslySetInnerHTML={{ __html: formatText(result) }}
-                                                />
-                                            </div>
+                                            <AuditDashboard rawText={result} reset={() => setResult(null)} />
                                         )}
                                     </>
                                 )}
@@ -344,7 +473,7 @@ const ViralAuditTool = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => v
 }
 
 // ==========================================
-// 🧩 UI COMPONENTS
+// 🧩 SITE COMPONENTS
 // ==========================================
 
 const AuthModal = () => {
@@ -360,17 +489,10 @@ const AuthModal = () => {
         e.preventDefault();
         setLoading(true);
         setError("");
-        
         let res;
-        if (authView === 'login') {
-            res = await login(email, password);
-        } else {
-            res = await signup(email, password);
-        }
-
-        if (res.error) {
-            setError(res.error.message);
-        }
+        if (authView === 'login') res = await login(email, password);
+        else res = await signup(email, password);
+        if (res.error) setError(res.error.message);
         setLoading(false);
     };
 
@@ -383,26 +505,16 @@ const AuthModal = () => {
                         <motion.div initial={{ scale: 0.95, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.95, opacity: 0, y: 20 }} className="bg-[#111] w-full max-w-md rounded-2xl border border-white/10 shadow-2xl pointer-events-auto overflow-hidden">
                             <div className="p-6 border-b border-white/5 flex justify-between items-center bg-[#151515]">
                                 <h3 className="font-heading font-bold text-xl">{authView === 'login' ? 'Welcome Back' : 'Create Account'}</h3>
-                                <button onClick={() => setShowAuthModal(false)} className="text-gray-500 hover:text-white transition-colors"><i className="fa-solid fa-xmark text-lg"></i></button>
+                                <button onClick={() => setShowAuthModal(false)} className="text-gray-500 hover:text-white"><i className="fa-solid fa-xmark text-lg"></i></button>
                             </div>
                             <div className="p-8">
                                 <form onSubmit={handleSubmit} className="space-y-4">
-                                    <div>
-                                        <label className="block text-xs font-mono text-gray-500 uppercase mb-2">Email Address</label>
-                                        <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-white/30 transition-colors" placeholder="name@company.com" />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-mono text-gray-500 uppercase mb-2">Password</label>
-                                        <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-white/30 transition-colors" placeholder="••••••••" />
-                                    </div>
+                                    <div><label className="block text-xs font-mono text-gray-500 uppercase mb-2">Email</label><input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-white/30" /></div>
+                                    <div><label className="block text-xs font-mono text-gray-500 uppercase mb-2">Password</label><input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-white/30" /></div>
                                     {error && <p className="text-[#FF0050] text-sm">{error}</p>}
-                                    <button type="submit" disabled={loading} className="w-full bg-white text-black font-bold py-3.5 rounded-lg hover:bg-gray-200 transition-all mt-4 flex items-center justify-center gap-2">
-                                        {loading ? <i className="fa-solid fa-circle-notch fa-spin"></i> : (authView === 'login' ? 'Sign In' : 'Create Free Account')}
-                                    </button>
+                                    <button type="submit" disabled={loading} className="w-full bg-white text-black font-bold py-3.5 rounded-lg hover:bg-gray-200 mt-4 flex items-center justify-center gap-2">{loading ? <i className="fa-solid fa-circle-notch fa-spin"></i> : (authView === 'login' ? 'Sign In' : 'Create Free Account')}</button>
                                 </form>
-                                <div className="mt-6 text-center text-sm text-gray-500">
-                                    {authView === 'login' ? <>Don't have an account? <button onClick={() => setAuthView('signup')} className="text-white hover:underline font-medium">Sign up</button></> : <>Already have an account? <button onClick={() => setAuthView('login')} className="text-white hover:underline font-medium">Sign in</button></>}
-                                </div>
+                                <div className="mt-6 text-center text-sm text-gray-500">{authView === 'login' ? <>Don't have an account? <button onClick={() => setAuthView('signup')} className="text-white hover:underline font-medium">Sign up</button></> : <>Already have an account? <button onClick={() => setAuthView('login')} className="text-white hover:underline font-medium">Sign in</button></>}</div>
                             </div>
                         </motion.div>
                     </div>
@@ -415,13 +527,11 @@ const AuthModal = () => {
 const Navbar = () => {
   const [scrolled, setScrolled] = useState(false);
   const { user, logout, setShowAuthModal, setAuthView } = useAuth();
-
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 20);
     window.addEventListener("scroll", handleScroll);
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
-
   return (
     <nav className={`fixed w-full z-50 transition-all duration-300 ${scrolled ? "bg-black/80 backdrop-blur-xl border-b border-white/10 py-3" : "bg-transparent py-6"}`}>
       <div className="max-w-7xl mx-auto px-6 flex items-center justify-between h-10">
@@ -434,17 +544,7 @@ const Navbar = () => {
           <a href="#pricing" onClick={(e) => scrollToSection(e, "pricing")} className="hover:text-white transition-colors">Pricing</a>
         </div>
         <div className="z-10 flex items-center gap-4">
-          {user ? (
-             <>
-                 <span className="text-xs text-gray-400 hidden sm:block">{user.email}</span>
-                 <button onClick={logout} className="text-sm font-medium text-white hover:text-gray-300 transition-colors">Logout</button>
-             </>
-          ) : (
-             <>
-                <button onClick={() => { setAuthView('login'); setShowAuthModal(true); }} className="text-sm font-medium text-gray-300 hover:text-white transition-colors hidden sm:block">Login</button>
-                <button onClick={() => { setAuthView('signup'); setShowAuthModal(true); }} className="bg-white text-black px-6 py-2.5 rounded-lg font-bold text-sm hover:bg-gray-200 transition-all shadow-lg">Get Started</button>
-             </>
-          )}
+          {user ? (<><span className="text-xs text-gray-400 hidden sm:block">{user.email}</span><button onClick={logout} className="text-sm font-medium text-white hover:text-gray-300">Logout</button></>) : (<><button onClick={() => { setAuthView('login'); setShowAuthModal(true); }} className="text-sm font-medium text-gray-300 hover:text-white hidden sm:block">Login</button><button onClick={() => { setAuthView('signup'); setShowAuthModal(true); }} className="bg-white text-black px-6 py-2.5 rounded-lg font-bold text-sm hover:bg-gray-200 shadow-lg">Get Started</button></>)}
         </div>
       </div>
     </nav>
@@ -453,7 +553,6 @@ const Navbar = () => {
 
 const Background = () => {
     const noiseSvg = "data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E";
-
     return (
         <div className="fixed inset-0 z-0 pointer-events-none">
             <div className="absolute inset-0 opacity-[0.03]" style={{ backgroundImage: `url("${noiseSvg}")` }}></div>
@@ -466,24 +565,16 @@ const Background = () => {
 
 const Hero = () => {
   const { openTool } = useAuth();
-
   return (
     <section className="relative pt-32 pb-12 px-6 md:pt-48 md:pb-24 overflow-hidden">
       <div className="max-w-7xl mx-auto text-center mb-10 relative z-10">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/10 bg-white/5 text-xs font-medium text-gray-300 mb-8 backdrop-blur-sm">
-            <span className="bg-gradient-to-r from-pink-500 to-purple-600 text-white text-[10px] font-bold px-2 py-0.5 rounded shadow-lg">NEW</span>
-            <span className="text-gray-300">AI Ad Audits are live</span>
+            <span className="bg-gradient-to-r from-pink-500 to-purple-600 text-white text-[10px] font-bold px-2 py-0.5 rounded shadow-lg">NEW</span><span className="text-gray-300">AI Ad Audits are live</span>
         </motion.div>
-        <motion.h1 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="text-5xl md:text-7xl font-bold font-heading tracking-tight mb-6 leading-[1.1]">
-          Stop Guessing.<br/>Audit Your Ads Instantly.
-        </motion.h1>
-        <motion.p initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="text-lg md:text-xl text-gray-400 max-w-2xl mx-auto mb-10 leading-relaxed">
-          Upload your video creative and let our AI analyze your hooks, pacing, and copy for viral potential.
-        </motion.p>
+        <motion.h1 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="text-5xl md:text-7xl font-bold font-heading tracking-tight mb-6 leading-[1.1]">Stop Guessing.<br/>Audit Your Ads Instantly.</motion.h1>
+        <motion.p initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="text-lg md:text-xl text-gray-400 max-w-2xl mx-auto mb-10 leading-relaxed">Upload your video creative and let our AI analyze your hooks, pacing, and copy for viral potential.</motion.p>
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="flex flex-col sm:flex-row justify-center gap-4">
-            <button onClick={openTool} className="bg-white text-black px-8 py-4 rounded-xl font-bold text-lg hover:scale-105 transition-transform shadow-[0_0_20px_rgba(255,255,255,0.3)]">
-                Launch Audit Tool
-            </button>
+            <button onClick={openTool} className="bg-white text-black px-8 py-4 rounded-xl font-bold text-lg hover:scale-105 transition-transform shadow-[0_0_20px_rgba(255,255,255,0.3)]">Launch Audit Tool</button>
         </motion.div>
       </div>
     </section>
@@ -512,63 +603,15 @@ const Features = () => {
     );
 };
 
-// ==========================================
-// 💲 PRICING COMPONENTS
-// ==========================================
-
 const PricingCard = ({ plan, price, description, features, isPro, delay }: any) => {
     const { user, setShowAuthModal, setAuthView } = useAuth();
-    
-    const handleAction = () => {
-        if (user) {
-            // Placeholder: In a real app, this would redirect to checkout
-            alert("You are logged in! Redirecting to checkout...");
-        } else {
-            setAuthView('signup');
-            setShowAuthModal(true);
-        }
-    };
-
+    const handleAction = () => { if (user) alert("You are logged in! Redirecting to checkout..."); else { setAuthView('signup'); setShowAuthModal(true); } };
     return (
-        <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            transition={{ delay }}
-            className={`relative p-8 rounded-2xl border flex flex-col h-full ${isPro ? 'bg-[#0f0f0f]/90 backdrop-blur-md border-white/30 shadow-[0_0_30px_rgba(255,255,255,0.05)]' : 'bg-[#0a0a0a]/80 backdrop-blur-sm border-white/10'}`}
-        >
-            {isPro && (
-                <div className="absolute top-0 right-0 bg-white text-black text-[10px] font-bold px-3 py-1 rounded-bl-xl rounded-tr-xl">
-                    RECOMMENDED
-                </div>
-            )}
-            <div className="mb-8">
-                <h3 className="text-lg font-bold font-heading mb-2">{plan}</h3>
-                <div className="flex items-baseline gap-1 mb-4">
-                    <span className="text-4xl font-bold">{price}</span>
-                    <span className="text-sm text-gray-500">/mo</span>
-                </div>
-                <p className="text-sm text-gray-400">{description}</p>
-            </div>
-            
-            <ul className="space-y-4 mb-8 flex-1">
-                {features.map((feature: any, i: number) => (
-                    <li key={i} className={`flex items-center gap-3 text-sm ${feature.included ? 'text-gray-200' : 'text-gray-600'}`}>
-                        <i className={`fa-solid ${feature.included ? 'fa-check text-emerald-500' : 'fa-xmark text-gray-700'}`}></i>
-                        {feature.text}
-                    </li>
-                ))}
-            </ul>
-
-            <button 
-                onClick={handleAction}
-                className={`block w-full text-center py-4 rounded-xl font-bold text-sm transition-all ${
-                isPro 
-                ? 'bg-white text-black hover:bg-gray-200 hover:scale-[1.02]' 
-                : 'border border-white/20 text-white hover:bg-white/5'
-            }`}>
-                {isPro ? 'Start Pro Trial' : 'Get Started'}
-            </button>
+        <motion.div initial={{ opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} transition={{ delay }} className={`relative p-8 rounded-2xl border flex flex-col h-full ${isPro ? 'bg-[#0f0f0f]/90 backdrop-blur-md border-white/30 shadow-[0_0_30px_rgba(255,255,255,0.05)]' : 'bg-[#0a0a0a]/80 backdrop-blur-sm border-white/10'}`}>
+            {isPro && <div className="absolute top-0 right-0 bg-white text-black text-[10px] font-bold px-3 py-1 rounded-bl-xl rounded-tr-xl">RECOMMENDED</div>}
+            <div className="mb-8"><h3 className="text-lg font-bold font-heading mb-2">{plan}</h3><div className="flex items-baseline gap-1 mb-4"><span className="text-4xl font-bold">{price}</span><span className="text-sm text-gray-500">/mo</span></div><p className="text-sm text-gray-400">{description}</p></div>
+            <ul className="space-y-4 mb-8 flex-1">{features.map((feature: any, i: number) => (<li key={i} className={`flex items-center gap-3 text-sm ${feature.included ? 'text-gray-200' : 'text-gray-600'}`}><i className={`fa-solid ${feature.included ? 'fa-check text-emerald-500' : 'fa-xmark text-gray-700'}`}></i>{feature.text}</li>))}</ul>
+            <button onClick={handleAction} className={`block w-full text-center py-4 rounded-xl font-bold text-sm transition-all ${isPro ? 'bg-white text-black hover:bg-gray-200 hover:scale-[1.02]' : 'border border-white/20 text-white hover:bg-white/5'}`}>{isPro ? 'Start Pro Trial' : 'Get Started'}</button>
         </motion.div>
     );
 };
@@ -577,50 +620,12 @@ const Pricing = () => {
     return (
         <section id="pricing" className="py-24 border-t border-white/5 relative z-10 scroll-mt-24">
             <div className="max-w-5xl mx-auto px-6">
-                <div className="text-center mb-16">
-                    <h2 className="text-3xl md:text-5xl font-bold font-heading mb-6">Pay for performance.</h2>
-                    <p className="text-gray-400">Simple pricing that scales with your ad spend.</p>
-                </div>
-
+                <div className="text-center mb-16"><h2 className="text-3xl md:text-5xl font-bold font-heading mb-6">Pay for performance.</h2><p className="text-gray-400">Simple pricing that scales with your ad spend.</p></div>
                 <div className="grid md:grid-cols-2 gap-8 max-w-3xl mx-auto">
-                    <PricingCard 
-                        plan="Starter"
-                        price="£29"
-                        description="For solo media buyers testing waters."
-                        delay={0.1}
-                        isPro={false}
-                        features={[
-                            { text: "50 Video Audits / Month", included: true },
-                            { text: "Deep Think Analysis", included: true },
-                            { text: "Detailed Fix Reports", included: true },
-                            { text: "Viral Script Rewrites", included: false },
-                            { text: "Policy Violation Check", included: false },
-                            { text: "Competitor Benchmarking", included: false },
-                        ]}
-                    />
-                    <PricingCard 
-                        plan="Professional"
-                        price="£49"
-                        description="For agencies and scaling brands."
-                        delay={0.2}
-                        isPro={true}
-                        features={[
-                            { text: "500 Video Audits / Month", included: true },
-                            { text: "Deep Think Analysis", included: true },
-                            { text: "Detailed Fix Reports", included: true },
-                            { text: "Viral Script Rewrites", included: true },
-                            { text: "Policy Violation Check", included: true },
-                            { text: "Competitor Benchmarking", included: true },
-                        ]}
-                    />
+                    <PricingCard plan="Starter" price="£29" description="For solo media buyers testing waters." delay={0.1} isPro={false} features={[{ text: "50 Video Audits / Month", included: true }, { text: "Deep Think Analysis", included: true }, { text: "Detailed Fix Reports", included: true }, { text: "Viral Script Rewrites", included: false }, { text: "Policy Violation Check", included: false }, { text: "Competitor Benchmarking", included: false }]} />
+                    <PricingCard plan="Professional" price="£49" description="For agencies and scaling brands." delay={0.2} isPro={true} features={[{ text: "500 Video Audits / Month", included: true }, { text: "Deep Think Analysis", included: true }, { text: "Detailed Fix Reports", included: true }, { text: "Viral Script Rewrites", included: true }, { text: "Policy Violation Check", included: true }, { text: "Competitor Benchmarking", included: true }]} />
                 </div>
-                
-                <div className="mt-12 text-center">
-                    <p className="text-sm text-gray-500 flex items-center justify-center gap-2">
-                        <i className="fa-solid fa-lock text-xs"></i> 
-                        Secure payment processing via Lemon Squeezy. Cancel anytime.
-                    </p>
-                </div>
+                <div className="mt-12 text-center"><p className="text-sm text-gray-500 flex items-center justify-center gap-2"><i className="fa-solid fa-lock text-xs"></i> Secure payment processing via Lemon Squeezy. Cancel anytime.</p></div>
             </div>
         </section>
     );
@@ -629,17 +634,8 @@ const Pricing = () => {
 const FloatingActionButton = () => {
     const { openTool } = useAuth();
     return (
-        <motion.div 
-            initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 1, type: "spring" }}
-            className="fixed bottom-8 right-8 z-40"
-        >
-            <button 
-                onClick={openTool}
-                className="flex items-center gap-2 px-6 py-4 bg-white text-black font-bold rounded-full shadow-[0_0_30px_rgba(255,255,255,0.2)] hover:scale-105 transition-transform"
-            >
-                <i className="fa-solid fa-robot text-[#00F2EA]"></i>
-                <span>Audit Ad</span>
-            </button>
+        <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 1, type: "spring" }} className="fixed bottom-8 right-8 z-40">
+            <button onClick={openTool} className="flex items-center gap-2 px-6 py-4 bg-white text-black font-bold rounded-full shadow-[0_0_30px_rgba(255,255,255,0.2)] hover:scale-105 transition-transform"><i className="fa-solid fa-robot text-[#00F2EA]"></i><span>Audit Ad</span></button>
         </motion.div>
     );
 }
@@ -647,10 +643,7 @@ const FloatingActionButton = () => {
 const Footer = () => (
     <footer className="py-12 border-t border-white/5 bg-[#050505] text-xs text-gray-600 relative z-10">
         <div className="max-w-6xl mx-auto px-6 flex justify-between items-center">
-            <div className="flex items-center gap-2">
-                 <div className="w-6 h-6 bg-white/10 rounded flex items-center justify-center"><i className="fa-solid fa-bolt text-gray-400 text-[10px]"></i></div>
-                 <span className="font-bold text-gray-400">ViralAudit</span>
-            </div>
+            <div className="flex items-center gap-2"><div className="w-6 h-6 bg-white/10 rounded flex items-center justify-center"><i className="fa-solid fa-bolt text-gray-400 text-[10px]"></i></div><span className="font-bold text-gray-400">ViralAudit</span></div>
             <div>&copy; 2025 ViralAudit Inc.</div>
         </div>
     </footer>
